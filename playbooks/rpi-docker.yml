@@ -1,0 +1,180 @@
+
+# Maintainer:   jeffskinnerbox@yahoo.com / www.jeffskinnerbox.me
+# Version:      2.0.0
+#
+# DESCRIPTION
+#
+# TESTING
+#    YAML linter to spot Ansible YAML syntax errors
+#        yamllint rpi-docker.yml
+#        ansible-lint rpi-docker.yml
+#
+#    Ansible linter to spot Ansible playbook syntax errors
+#        ansible-playbook rpi-docker.yml -i 192.168.1.207, --user ansible --syntax-check
+#
+#    Generate a list of tasks that will be executed for the tags
+#        ansible-playbook rpi-docker.yml -i 192.168.1.207, --user ansible --list-tasks
+#
+#    Ansible dry-run checking for errors and showing results of a run
+#        ansible-playbook rpi-docker.yml -i 192.168.1.207, --user ansible --check
+#
+#    Check for Ansible Playbook's idempotence
+#        ansible-playbook rpi-docker.yml -i 192.168.1.207, --user ansible --check --diff --limit
+#
+# EXECUTION
+#    Run the playbook for real (assuming 'inventory' is up to date)
+#        ansible-playbook rpi-docker.yml -i 192.168.1.207, --user ansible
+#
+# VALIDATION
+#
+# SOURCES
+#    How To Install Docker Using Ansible - https://medium.com/@GarisSpace/how-to-install-docker-using-ansible-01a674086f8c
+#    Install Docker on Remote Server using Ansible - https://dev.to/danielcristho/install-docker-on-remote-server-using-ansible-4b4i
+#    How to Use Ansible to Install and Set Up Docker on Ubuntu 20.04 - https://www.digitalocean.com/community/tutorials/how-to-use-ansible-to-install-and-set-up-docker-on-ubuntu-20-04
+#
+#  WARNING
+#    The Ansible playbook may fail with the message "error: externally-managed-environment".
+#    This is a `pip` problem that is explained here: https://stackoverflow.com/questions/75602063/pip-install-r-requirements-txt-is-failing-this-environment-is-externally-mana/75696359#75696359
+#    I used the yaml "extra_args: --break-system-packages" as a fix but but may not be a wise thing to do.
+#
+# ANSIBLE VERSION
+#    ansible [core 2.16.4]
+#
+
+
+---
+
+
+- name: Install Docker, Docker Compose, and Portainer or Portainer Agent
+  hosts: all
+  become: true                               # set to 'true' to activate privilege escalation => use sudo and be root by default
+  become_method: ansible.builtin.sudo
+  gather_facts: true
+  vars:
+    app_user: "pi"                           # user 'pi' is the owner of the portainer volume
+    app_user_home: "/home/pi"                # home directory of user 'pi'
+    ansible_user: "ansible"                  # the user 'ansible' is used by Ansible for provisioning
+    ansible_user_home: "/home/ansible"       # home directory of user 'ansible'
+    tmp_path: "/tmp"                         # location for temporary files / executables
+    portainer_agent_port: 9001               # port used by portainer agent
+    portainer_volumes: "portainer/volumes"   # within 'app_user_home' path
+    docker_path: /usr/local/bin              # location for docker executables
+    arch_mapping:                            # map ansible architecture {{ ansible_architecture }} names to Docker's architecture names
+      x86_64: amd64
+      aarch64: arm64
+
+  tasks:
+    - name: Print processor architecture facts (as root)
+      ansible.builtin.debug:
+        msg: "Facts: Architecture = {{ ansible_architecture }} and Codename = {{ ansible_lsb.codename }}"
+
+    - name: Install docker's required system packages (as root)
+      ansible.builtin.apt:
+        state: present                       # must be one of: absent, build-dep, fixed, latest, present
+        update_cache: true                   # update the apt repository list cache
+        cache_valid_time: 86400              # update the apt cache if it is older than this seconds
+        pkg: ['python3-pip', 'aptitude', 'apt-transport-https', 'ca-certificates', 'curl', 'gnupg-agent', 'software-properties-common', 'virtualenv', 'python3-setuptools']
+
+    - name: Create directory for Docker's GPG key (as root)
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Docker's official GPG key to keyring (as root)
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/raspbian/gpg
+        keyring: /etc/apt/keyrings/docker.gpg
+        state: present
+
+    - name: Add the Docker package to your repository (as root)
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch={{ arch_mapping[ansible_architecture] | default(ansible_architecture) }}
+          signed-by=/etc/apt/keyrings/docker.gpg]
+          https://download.docker.com/linux/raspbian {{ ansible_lsb.codename }} stable
+        filename: docker
+        state: present
+
+    - name: Install Docker and related packages (as root)
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: true
+      loop:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+        - docker-buildx-plugin
+        - docker-compose-plugin
+
+    - name: Install 'docker' pip module so ansible can work with docker (as root)
+      ansible.builtin.pip:
+        name: docker
+        extra_args: --break-system-packages
+
+    - name: Make sure the group 'docker' is present (as root)
+      ansible.builtin.group:
+        name: docker
+        state: present
+
+    - name: Add the users 'ansible' and 'pi' to the docker group (as root)
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop:
+        - "{{ app_user }}"
+        - "{{ ansible_user }}"
+
+    - name: Enable and start docker services (as root)
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - docker.service
+        - containerd.service
+
+    - name: Create a test container using 'hello-world' (as root)
+      community.docker.docker_container:
+        name: hello-world
+        image: hello-world
+        state: started                       # must be one of: absent, present, stopped, started
+        container_default_behavior: compatibility
+        auto_remove: true                    # auto-removal of the container when the container's process exits
+
+    - name: Create a 'portainer-agent' container (as root)
+      community.docker.docker_container:
+        name: portainer-agent
+        image: portainer/agent:latest
+        state: started                       # must be one of: absent, present, stopped, started
+        ports:
+          - "{{ portainer_agent_port }}:9001"
+        volumes:
+          - "/var/run/docker.sock:/var/run/docker.sock"
+          - "{{ app_user_home }}/{{ portainer_volumes }}:/var/lib/docker/volumes"
+        detach: true                         # set to true to leave the container running in background
+        container_default_behavior: compatibility
+        restart_policy: unless-stopped       # must be one of: no, on-failure, always, unless-stopped
+
+    - name: Open UFW firewall port for 'portainer-agent' (as root)
+      community.general.ufw:
+        rule: allow
+        port: "{{ portainer_agent_port }}"
+
+#   - name: Create a portainer container (as root)
+#     community.docker.docker_container:
+#       name: portainer
+#       state: started                       # must be one of: absent, present, stopped, started
+#       image: portainer/portainer-ce:latest
+#       ports:
+#         - "{{ portainer_port }}:9000"
+#       volumes:
+#         - /etc/localtime:/etc/localtime:ro
+#         - /var/run/docker.sock:/var/run/docker.sock
+#         - "{{ app_user_home }}/{{ portainer_data }}:/data"
+#       detach: true                         # set to true to leave the container running in background
+#       container_default_behavior: compatibility
+#       restart_policy: unless-stopped       # must be one of: no, on-failure, always, unless-stopped
+

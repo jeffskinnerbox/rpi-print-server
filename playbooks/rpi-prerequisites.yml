@@ -1,0 +1,92 @@
+
+# Maintainer:   jeffskinnerbox@yahoo.com / www.jeffskinnerbox.me
+# Version:      2.0.0
+#
+# DESCRIPTION
+#
+# TESTING
+#    YAML linter to spot Ansible YAML syntax errors
+#        yamllint rpi-prerequisites.yml
+#        ansible-lint rpi-prerequisites.yml
+#
+#    Ansible linter to spot Ansible playbook syntax errors
+#        ansible-playbook rpi-prerequisites.yml -i 192.168.1.207, --user ansible --syntax-check
+#
+#    Generate a list of tasks that will be executed for the tags
+#        ansible-playbook rpi-prerequisites.yml -i 192.168.1.207, --user ansible --list-tasks
+#
+#    Ansible dry-run checking for errors and showing results of a run
+#        ansible-playbook rpi-prerequisites.yml -i 192.168.1.207, --user ansible --check
+#
+# EXECUTION
+#    Run the playbook for real (assuming 'inventory' is up to date)
+#        ansible-playbook rpi-prerequisites.yml -i 192.168.1.207, --user ansible
+#
+# VALIDATION
+#
+# SOURCES
+#
+# ANSIBLE VERSION
+#    ansible [core 2.16.4]
+#
+
+
+---
+
+
+- name: Install Desirable and Required Prerequisites Packages
+  hosts: all
+  become: true           # set to 'true' to activate privilege escalation => use sudo and be root by default
+  become_method: ansible.builtin.sudo
+  gather_facts: true
+
+  tasks:
+    - name: Run the equivalent of "apt-get update" (as root)
+      ansible.builtin.apt:
+        update_cache: true       # update the apt repository list cache
+        cache_valid_time: 86400  # update the apt cache if it is older than this seconds
+
+    - name: Install general purpose packages (as root)
+      ansible.builtin.apt:
+        state: present
+        name: ['git', 'jq', 'curl', 'wget', 'ntp', 'apt-transport-https', 'gnupg2', 'trash-cli', 'gnome-terminal', ' tmux', 'stow', 'xclip']
+
+    - name: Install desirable prerequisite packages (as root)
+      ansible.builtin.apt:
+        state: present           # must be one of: absent, build-dep, fixed, latest, present
+        update_cache: false
+        pkg: ['ca-certificates', 'software-properties-common', 'ca-certificates', 'curl', 'software-properties-common']
+
+    - name: Install basic networking tools (as root)
+      ansible.builtin.apt:
+        state: present           # must be one of: absent, build-dep, fixed, latest, present
+        update_cache: false
+        pkg: ['net-tools', 'nmap', 'traceroute', 'arp-scan', 'netdiscover']
+
+    - name: Install these desirable packages for ansible, needed in some situations (as root)
+      ansible.builtin.apt:
+        state: present           # must be one of: absent, build-dep, fixed, latest, present
+        update_cache: false
+        pkg: ['acl', 'sshpass', 'lookup']
+
+    - name: Install these desirable packages for raspberry pi device interfaces (as root)
+      ansible.builtin.apt:
+        state: present           # must be one of: absent, build-dep, fixed, latest, present
+        update_cache: false
+        pkg: ['i2c-tools']
+
+    - name: Check if a reboot is needed because of kernel changes, etc. (as root)
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Reboot the box if needed (as root)
+      ansible.builtin.reboot:
+        msg: "Reboot Initiated By Ansible"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: uptime
+      when: reboot_required_file.stat.exists
+
